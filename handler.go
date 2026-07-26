@@ -44,13 +44,13 @@ func handleMessage(ctx context.Context, solr *SolrClient, topic string, value []
 
 func handleFileEvent(ctx context.Context, solr *SolrClient, typ string, value []byte) error {
 	switch typ {
-	case "file.created":
+	case "file.created", "file.updated":
 		var ev FileLifecycleEvent
 		if err := json.Unmarshal(value, &ev); err != nil {
-			return fmt.Errorf("decode file.created: %w", err)
+			return fmt.Errorf("decode %s: %w", typ, err)
 		}
 		if ev.FileID == "" || ev.OrganizationID == "" {
-			log.Printf("skip file.created: missing fileId/organizationId")
+			log.Printf("skip %s: missing fileId/organizationId", typ)
 			return nil
 		}
 		doc := SolrDoc{
@@ -70,7 +70,7 @@ func handleFileEvent(ctx context.Context, solr *SolrClient, typ string, value []
 		if err := solr.Upsert(ctx, doc); err != nil {
 			return err
 		}
-		log.Printf("indexed file.created id=%s org=%s name=%q", ev.FileID, ev.OrganizationID, ev.Name)
+		log.Printf("indexed %s id=%s org=%s name=%q", typ, ev.FileID, ev.OrganizationID, ev.Name)
 		return nil
 
 	case "file.deleted":
@@ -79,12 +79,13 @@ func handleFileEvent(ctx context.Context, solr *SolrClient, typ string, value []
 			return fmt.Errorf("decode file.deleted: %w", err)
 		}
 		if ev.FileID == "" {
+			log.Printf("skip file.deleted: missing fileId")
 			return nil
 		}
 		if err := solr.DeleteByID(ctx, ev.FileID); err != nil {
 			return err
 		}
-		log.Printf("deleted file id=%s", ev.FileID)
+		log.Printf("deleted file id=%s org=%s", ev.FileID, ev.OrganizationID)
 		return nil
 
 	default:

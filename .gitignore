@@ -1,0 +1,6 @@
+/byz-ingest
+/byz-ingest.exe
+*.exe
+*.test
+.idea/
+.vscode/

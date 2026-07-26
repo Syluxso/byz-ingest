@@ -12,10 +12,10 @@ Go Kafka → Solr indexer for Byzantine. Pairs with **byz-search** (same collect
 
 | Topic | Types handled |
 |-------|----------------|
-| `byz.files.file` | `file.created` → upsert metadata doc; `file.deleted` → delete (when emitted) |
+| `byz.files.file` | `file.created` / `file.updated` → upsert metadata doc; `file.deleted` → delete |
 | `byz.search.index` | `search.index` → upsert full-text doc; `search.delete` → delete |
 
-`file.created` today has **metadata only** (no extracted text). Ingest indexes `title=name` and `content` from name + contentType + storageKey so files are findable until a text extractor publishes `search.index`.
+File lifecycle events carry **metadata only** (no extracted text). Ingest indexes `title=name` and `content` from name + contentType + storageKey so files are findable until a text extractor publishes `search.index`.
 
 ## Solr fields
 
