@@ -12,7 +12,7 @@ Go Kafka → Solr indexer for Byzantine. Pairs with **byz-search** (same collect
 
 | Topic | Types handled |
 |-------|----------------|
-| `byz.files.file` | `file.created` / `file.updated` → upsert metadata doc; `file.deleted` → delete |
+| `byz.files.file` | `file.created` → upsert metadata; `file.updated` → patch title/path only; `file.deleted` → delete |
 | `byz.search.index` | `search.index` → upsert full-text doc; `search.delete` → delete |
 
 File lifecycle events carry **metadata only** (no extracted text). Ingest indexes `title=name` and `content` from name + contentType + storageKey so files are findable until a text extractor publishes `search.index`.
@@ -21,10 +21,11 @@ File lifecycle events carry **metadata only** (no extracted text). Ingest indexe
 
 Same contract as [byz-search](../byz-search/README.md): `id`, `title`, `content`, `organization_id`, `tenant_id`, `user_id`, `source`, `path`, `tags`.
 
-## Health
+## Health / admin
 
 - `GET /healthz` — process up  
 - `GET /actuator/health` — UP only if Solr ping succeeds  
+- `GET /api/v1/admin/logs` — in-memory log tail (JWT; Admin Logs UI)
 
 ## Config
 
@@ -32,6 +33,7 @@ Same contract as [byz-search](../byz-search/README.md): `id`, `title`, `content`
 |-----|---------|
 | `PORT` | `8100` |
 | `BIND` | `0.0.0.0` |
+| `IAM_JWKS_URL` | `https://iam.byzantineapp.dev/.well-known/jwks.json` |
 | `SOLR_URL` | `http://127.0.0.1:8983` |
 | `SOLR_COLLECTION` | `byz` |
 | `SOLR_COMMIT_WITHIN_MS` | `1000` |

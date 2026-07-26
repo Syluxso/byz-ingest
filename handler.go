@@ -44,7 +44,7 @@ func handleMessage(ctx context.Context, solr *SolrClient, topic string, value []
 
 func handleFileEvent(ctx context.Context, solr *SolrClient, typ string, value []byte) error {
 	switch typ {
-	case "file.created", "file.updated":
+	case "file.created":
 		var ev FileLifecycleEvent
 		if err := json.Unmarshal(value, &ev); err != nil {
 			return fmt.Errorf("decode %s: %w", typ, err)
@@ -71,6 +71,22 @@ func handleFileEvent(ctx context.Context, solr *SolrClient, typ string, value []
 			return err
 		}
 		log.Printf("indexed %s id=%s org=%s name=%q", typ, ev.FileID, ev.OrganizationID, ev.Name)
+		return nil
+
+	case "file.updated":
+		// Partial update so rename does not wipe extracted body from search.index.
+		var ev FileLifecycleEvent
+		if err := json.Unmarshal(value, &ev); err != nil {
+			return fmt.Errorf("decode file.updated: %w", err)
+		}
+		if ev.FileID == "" {
+			log.Printf("skip file.updated: missing fileId")
+			return nil
+		}
+		if err := solr.PatchFileMeta(ctx, ev.FileID, ev.Name, firstNonEmpty(ev.StorageKey, ev.Name)); err != nil {
+			return err
+		}
+		log.Printf("patched file.updated id=%s name=%q", ev.FileID, ev.Name)
 		return nil
 
 	case "file.deleted":

@@ -60,6 +60,25 @@ func (s *SolrClient) Upsert(ctx context.Context, docs ...SolrDoc) error {
 	return s.postUpdate(ctx, payload)
 }
 
+// PatchFileMeta updates title/path without replacing content (atomic Solr "set").
+func (s *SolrClient) PatchFileMeta(ctx context.Context, id, title, path string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("empty id")
+	}
+	doc := map[string]any{"id": id}
+	if strings.TrimSpace(title) != "" {
+		doc["title"] = map[string]string{"set": title}
+	}
+	if strings.TrimSpace(path) != "" {
+		doc["path"] = map[string]string{"set": path}
+	}
+	payload, err := json.Marshal([]map[string]any{doc})
+	if err != nil {
+		return err
+	}
+	return s.postUpdate(ctx, payload)
+}
+
 func (s *SolrClient) DeleteByID(ctx context.Context, id string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("empty id")
