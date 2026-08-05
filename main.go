@@ -18,7 +18,7 @@ func main() {
 	jwksURL := env("IAM_JWKS_URL", "https://iam.byzantineapp.dev/.well-known/jwks.json")
 	solrURL := env("SOLR_URL", "http://127.0.0.1:8983")
 	collection := env("SOLR_COLLECTION", "byz")
-	commitMs := envInt("SOLR_COMMIT_WITHIN_MS", 1000)
+	commitMs := envInt("SOLR_COMMIT_WITHIN_MS", 2000)
 	bootstrap := env("KAFKA_BOOTSTRAP", "127.0.0.1:9092")
 	group := env("KAFKA_GROUP", "byz-ingest")
 	topicsCSV := env("KAFKA_TOPICS", "byz.files.file,byz.search.index")
@@ -31,6 +31,7 @@ func main() {
 	logs := NewLogBuffer()
 	teeStdLog(logs, "byz-ingest")
 
+	metrics := &IngestMetrics{}
 	solr := NewSolrClient(solrURL, collection, commitMs)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -41,7 +42,7 @@ func main() {
 		log.Fatalf("jwks: %v", err)
 	}
 
-	runConsumers(ctx, splitCSV(bootstrap), group, topics, solr)
+	runConsumers(ctx, splitCSV(bootstrap), group, topics, solr, metrics)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", withCORS(func(w http.ResponseWriter, r *http.Request) {
@@ -51,10 +52,14 @@ func main() {
 		pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		status := http.StatusOK
-		body := map[string]any{"status": "UP"}
+		body := map[string]any{
+			"status":  "UP",
+			"metrics": metrics.Snapshot(),
+		}
 		if err := solr.Ping(pingCtx); err != nil {
 			status = http.StatusServiceUnavailable
-			body = map[string]any{"status": "DOWN", "solr": "unreachable"}
+			body["status"] = "DOWN"
+			body["solr"] = "unreachable"
 			log.Printf("health solr: %v", err)
 		}
 		writeJSON(w, status, body)
@@ -85,8 +90,10 @@ func main() {
 	}()
 
 	<-ctx.Done()
+	// Consumers flush on ctx cancel; give them a moment.
+	time.Sleep(200 * time.Millisecond)
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdown)
-	log.Printf("shutdown")
+	log.Printf("shutdown metrics=%v", metrics.Snapshot())
 }

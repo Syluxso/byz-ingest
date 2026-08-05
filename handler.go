@@ -1,57 +1,47 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
-	"log"
 	"strings"
+	"unicode/utf8"
 )
 
-func handleMessage(ctx context.Context, solr *SolrClient, topic string, value []byte) error {
+// parseMessage turns a Kafka payload into a work item. Never calls Solr.
+// Invalid / incomplete messages become workSkip (safe to commit).
+func parseMessage(topic string, value []byte) workItem {
 	if len(value) == 0 || !json.Valid(value) {
-		return nil
+		return workItem{kind: workSkip, skipReason: "empty_or_invalid_json", approxBytes: len(value)}
 	}
 
 	var envelope struct {
 		Type string `json:"type"`
 	}
 	if err := json.Unmarshal(value, &envelope); err != nil {
-		return nil
+		return workItem{kind: workSkip, skipReason: "envelope_decode", approxBytes: len(value)}
 	}
 	if envelope.Type == "" {
-		log.Printf("skip topic=%s: missing type", topic)
-		return nil
+		return workItem{kind: workSkip, skipReason: "missing_type", approxBytes: len(value)}
 	}
 
-	switch topic {
-	case "byz.files.file":
-		return handleFileEvent(ctx, solr, envelope.Type, value)
-	case "byz.search.index":
-		return handleSearchIndexEvent(ctx, solr, envelope.Type, value)
+	switch {
+	case topic == "byz.files.file" || strings.Contains(topic, "files"):
+		return parseFileEvent(envelope.Type, value)
+	case topic == "byz.search.index" || strings.Contains(topic, "search"):
+		return parseSearchIndexEvent(envelope.Type, value)
 	default:
-		// Allow env override topic names via suffix match on known types.
-		if strings.Contains(topic, "files") {
-			return handleFileEvent(ctx, solr, envelope.Type, value)
-		}
-		if strings.Contains(topic, "search") {
-			return handleSearchIndexEvent(ctx, solr, envelope.Type, value)
-		}
-		log.Printf("skip unknown topic=%s type=%s", topic, envelope.Type)
-		return nil
+		return workItem{kind: workSkip, skipReason: "unknown_topic", approxBytes: len(value)}
 	}
 }
 
-func handleFileEvent(ctx context.Context, solr *SolrClient, typ string, value []byte) error {
+func parseFileEvent(typ string, value []byte) workItem {
 	switch typ {
 	case "file.created":
 		var ev FileLifecycleEvent
 		if err := json.Unmarshal(value, &ev); err != nil {
-			return fmt.Errorf("decode %s: %w", typ, err)
+			return workItem{kind: workSkip, skipReason: "file_created_decode", approxBytes: len(value)}
 		}
 		if ev.FileID == "" || ev.OrganizationID == "" {
-			log.Printf("skip %s: missing fileId/organizationId", typ)
-			return nil
+			return workItem{kind: workSkip, skipReason: "file_created_missing_ids", approxBytes: len(value)}
 		}
 		doc := SolrDoc{
 			ID:             ev.FileID,
@@ -67,60 +57,50 @@ func handleFileEvent(ctx context.Context, solr *SolrClient, typ string, value []
 		if ev.UploadedBy != nil {
 			doc.UserID = *ev.UploadedBy
 		}
-		if err := solr.Upsert(ctx, doc); err != nil {
-			return err
-		}
-		log.Printf("indexed %s id=%s org=%s name=%q", typ, ev.FileID, ev.OrganizationID, ev.Name)
-		return nil
+		withCodeTokens(&doc)
+		return workItem{kind: workUpsert, doc: doc, approxBytes: estimateDocBytes(doc)}
 
 	case "file.updated":
-		// Partial update so rename does not wipe extracted body from search.index.
 		var ev FileLifecycleEvent
 		if err := json.Unmarshal(value, &ev); err != nil {
-			return fmt.Errorf("decode file.updated: %w", err)
+			return workItem{kind: workSkip, skipReason: "file_updated_decode", approxBytes: len(value)}
 		}
 		if ev.FileID == "" {
-			log.Printf("skip file.updated: missing fileId")
-			return nil
+			return workItem{kind: workSkip, skipReason: "file_updated_missing_id", approxBytes: len(value)}
 		}
-		if err := solr.PatchFileMeta(ctx, ev.FileID, ev.Name, firstNonEmpty(ev.StorageKey, ev.Name)); err != nil {
-			return err
+		return workItem{
+			kind:       workPatch,
+			patchID:    ev.FileID,
+			patchTitle: ev.Name,
+			patchPath:  firstNonEmpty(ev.StorageKey, ev.Name),
+			approxBytes: 256,
 		}
-		log.Printf("patched file.updated id=%s name=%q", ev.FileID, ev.Name)
-		return nil
 
 	case "file.deleted":
 		var ev FileLifecycleEvent
 		if err := json.Unmarshal(value, &ev); err != nil {
-			return fmt.Errorf("decode file.deleted: %w", err)
+			return workItem{kind: workSkip, skipReason: "file_deleted_decode", approxBytes: len(value)}
 		}
 		if ev.FileID == "" {
-			log.Printf("skip file.deleted: missing fileId")
-			return nil
+			return workItem{kind: workSkip, skipReason: "file_deleted_missing_id", approxBytes: len(value)}
 		}
-		if err := solr.DeleteByID(ctx, ev.FileID); err != nil {
-			return err
-		}
-		log.Printf("deleted file id=%s org=%s", ev.FileID, ev.OrganizationID)
-		return nil
+		return workItem{kind: workDelete, deleteID: ev.FileID, approxBytes: 64}
 
 	default:
-		log.Printf("ignore file type=%s", typ)
-		return nil
+		return workItem{kind: workSkip, skipReason: "file_ignore_type:" + typ, approxBytes: len(value)}
 	}
 }
 
-func handleSearchIndexEvent(ctx context.Context, solr *SolrClient, typ string, value []byte) error {
+func parseSearchIndexEvent(typ string, value []byte) workItem {
 	var ev SearchIndexEvent
 	if err := json.Unmarshal(value, &ev); err != nil {
-		return fmt.Errorf("decode search index event: %w", err)
+		return workItem{kind: workSkip, skipReason: "search_decode", approxBytes: len(value)}
 	}
 
 	switch typ {
 	case "search.index":
 		if ev.DocumentID == "" || ev.OrganizationID == "" {
-			log.Printf("skip search.index: missing documentId/organizationId")
-			return nil
+			return workItem{kind: workSkip, skipReason: "search_index_missing_ids", approxBytes: len(value)}
 		}
 		doc := SolrDoc{
 			ID:             ev.DocumentID,
@@ -136,27 +116,17 @@ func handleSearchIndexEvent(ctx context.Context, solr *SolrClient, typ string, v
 		if doc.Content == "" && doc.Title != "" {
 			doc.Content = doc.Title
 		}
-		if err := solr.Upsert(ctx, doc); err != nil {
-			return err
-		}
-		log.Printf("indexed search.index id=%s org=%s source=%s", ev.DocumentID, ev.OrganizationID, doc.Source)
-		return nil
+		withCodeTokens(&doc)
+		return workItem{kind: workUpsert, doc: doc, approxBytes: estimateDocBytes(doc)}
 
 	case "search.delete":
-		id := ev.DocumentID
-		if id == "" {
-			log.Printf("skip search.delete: missing documentId")
-			return nil
+		if ev.DocumentID == "" {
+			return workItem{kind: workSkip, skipReason: "search_delete_missing_id", approxBytes: len(value)}
 		}
-		if err := solr.DeleteByID(ctx, id); err != nil {
-			return err
-		}
-		log.Printf("deleted search doc id=%s", id)
-		return nil
+		return workItem{kind: workDelete, deleteID: ev.DocumentID, approxBytes: 64}
 
 	default:
-		log.Printf("ignore search type=%s", typ)
-		return nil
+		return workItem{kind: workSkip, skipReason: "search_ignore_type:" + typ, approxBytes: len(value)}
 	}
 }
 
@@ -179,4 +149,16 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func estimateDocBytes(d SolrDoc) int {
+	// Rough upper bound for batch byte limits (UTF-8 content dominates).
+	n := utf8.RuneCountInString(d.Content) + utf8.RuneCountInString(d.Title) + 256
+	for _, t := range d.CodeTokens {
+		n += len(t)
+	}
+	if n < 128 {
+		n = 128
+	}
+	return n
 }

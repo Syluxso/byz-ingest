@@ -43,4 +43,7 @@ type SolrDoc struct {
 	Source         string   `json:"source,omitempty"`
 	Path           string   `json:"path,omitempty"`
 	Tags           []string `json:"tags,omitempty"`
+	// CodeTokens holds path/API-shaped substrings (multi-valued strings) so
+	// queries like /notifications/{id} work despite content tokenization.
+	CodeTokens []string `json:"code_tokens,omitempty"`
 }

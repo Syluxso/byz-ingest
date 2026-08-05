@@ -27,7 +27,7 @@ func NewSolrClient(baseURL, collection string, commitWithinMs int) *SolrClient {
 		base:       strings.TrimRight(baseURL, "/"),
 		collection: collection,
 		commitMs:   commitWithinMs,
-		http:       &http.Client{Timeout: 30 * time.Second},
+		http:       &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
